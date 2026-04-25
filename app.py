@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sys
 import tempfile
 from pathlib import Path
@@ -17,9 +18,21 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 try:
-    from ml_project.web_support import FeatureSpec, infer_feature_specs, resolve_latest_model_artifacts
+    from ml_project.web_support import (
+        FeatureSpec,
+        infer_feature_specs,
+        infer_feature_specs_from_pipeline,
+        resolve_data_file_path,
+        resolve_latest_model_artifacts,
+    )
 except ModuleNotFoundError:
-    from web_support import FeatureSpec, infer_feature_specs, resolve_latest_model_artifacts
+    from web_support import (
+        FeatureSpec,
+        infer_feature_specs,
+        infer_feature_specs_from_pipeline,
+        resolve_data_file_path,
+        resolve_latest_model_artifacts,
+    )
 
 try:
     from ml_project.model_compat import load_joblib_model
@@ -128,18 +141,28 @@ def _render_inputs(specs: list[FeatureSpec]) -> pd.DataFrame:
                 default_idx = choices.index(spec.default_value) if spec.default_value in choices else 0
                 row[spec.name] = st.selectbox(spec.name, choices, index=default_idx, key=f"input_{spec.name}")
             else:
-                min_v = float(spec.min_value if spec.min_value is not None else 0.0)
-                max_v = float(spec.max_value if spec.max_value is not None else 1.0)
-                default_v = float(spec.default_value if spec.default_value is not None else min_v)
-                step = max((max_v - min_v) / 200.0, 0.01)
-                row[spec.name] = st.number_input(
-                    spec.name,
-                    min_value=min_v,
-                    max_value=max_v,
-                    value=default_v,
-                    step=step,
-                    key=f"input_{spec.name}",
-                )
+                min_v = spec.min_value if spec.min_value is not None else None
+                max_v = spec.max_value if spec.max_value is not None else None
+                default_v = float(spec.default_value if spec.default_value is not None else 0.0)
+                if min_v is None or max_v is None:
+                    row[spec.name] = st.number_input(
+                        spec.name,
+                        value=default_v,
+                        step=0.1,
+                        key=f"input_{spec.name}",
+                    )
+                else:
+                    min_value = float(min_v)
+                    max_value = float(max_v)
+                    step = max((max_value - min_value) / 200.0, 0.01)
+                    row[spec.name] = st.number_input(
+                        spec.name,
+                        min_value=min_value,
+                        max_value=max_value,
+                        value=default_v,
+                        step=step,
+                        key=f"input_{spec.name}",
+                    )
     return pd.DataFrame([row])
 
 
@@ -174,42 +197,52 @@ def _build_force_plot_html(
     return f"<head>{shap.getjs()}</head><body>{force_html}</body>"
 
 
-st.title("🩺 Medical AI Prediction Web")
+st.title("Medical AI Prediction")
 
-artifacts = resolve_latest_model_artifacts(base_dir=ROOT)
-data_path = "data.xlsx"
+base_dir = Path(os.getenv("WEB_BASE_DIR", str(ROOT))).resolve()
+data_file_name = os.getenv("WEB_DATA_FILE", "data.xlsx")
+artifacts = resolve_latest_model_artifacts(base_dir=base_dir)
 
 try:
     pipeline = _load_model(str(artifacts.model_path))
-    data_df = _load_data(data_path)
-    specs = _get_feature_specs(data_path, tuple(artifacts.selected_features))
+    data_df: pd.DataFrame | None = None
+    try:
+        data_path = resolve_data_file_path(base_dir=base_dir, app_dir=ROOT, file_name=data_file_name)
+        data_df = _load_data(str(data_path))
+        specs = _get_feature_specs(str(data_path), tuple(artifacts.selected_features))
+    except FileNotFoundError:
+        specs = infer_feature_specs_from_pipeline(pipeline=pipeline, feature_cols=artifacts.selected_features)
+        st.info("data.xlsx not found. Loaded input specs from model metadata. SHAP force plot is disabled.")
 except Exception as exc:
-    st.error(f"加载失败: {exc}")
+    st.error(f"Load failed: {exc}")
     st.stop()
 
-st.subheader("输入特征")
+st.subheader("Input Features")
 input_df = _render_inputs(specs)
-if st.button("开始预测", type="primary", use_container_width=True):
+if st.button("Start Prediction", type="primary", use_container_width=True):
     proba = float(pipeline.predict_proba(input_df[artifacts.selected_features])[0, 1])
     threshold = artifacts.best_threshold if artifacts.best_threshold is not None else 0.5
     pred = int(proba >= float(threshold))
-    st.metric("预测概率(正类)", f"{proba:.2%}")
-    st.metric("分类结果", f"{pred} (阈值={threshold:.3f})")
+    st.metric("Predicted Positive Probability", f"{proba:.2%}")
+    st.metric("Predicted Class", f"{pred} (threshold={threshold:.3f})")
 
     st.markdown("---")
     st.subheader("SHAP Force Plot")
-    try:
-        bg = data_df[artifacts.selected_features].sample(n=min(120, len(data_df)), random_state=42)
-        html = _build_force_plot_html(
-            pipeline=pipeline,
-            input_df=input_df,
-            background_df=bg,
-            selected_features=artifacts.selected_features,
-        )
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".html") as tmp:
-            tmp.write(html.encode("utf-8"))
-            tmp_path = Path(tmp.name)
-        components.html(tmp_path.read_text(encoding="utf-8"), height=380, scrolling=True)
-        tmp_path.unlink(missing_ok=True)
-    except Exception as exc:
-        st.warning(f"SHAP 图生成失败: {exc}")
+    if data_df is None:
+        st.info("No data.xlsx provided. SHAP force plot skipped.")
+    else:
+        try:
+            bg = data_df[artifacts.selected_features].sample(n=min(120, len(data_df)), random_state=42)
+            html = _build_force_plot_html(
+                pipeline=pipeline,
+                input_df=input_df,
+                background_df=bg,
+                selected_features=artifacts.selected_features,
+            )
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".html") as tmp:
+                tmp.write(html.encode("utf-8"))
+                tmp_path = Path(tmp.name)
+            components.html(tmp_path.read_text(encoding="utf-8"), height=380, scrolling=True)
+            tmp_path.unlink(missing_ok=True)
+        except Exception as exc:
+            st.warning(f"SHAP plot generation failed: {exc}")

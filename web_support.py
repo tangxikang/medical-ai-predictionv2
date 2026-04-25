@@ -140,3 +140,106 @@ def infer_feature_specs(*, df: pd.DataFrame, feature_cols: list[str]) -> list[Fe
                 )
             )
     return specs
+
+
+def infer_feature_specs_from_pipeline(*, pipeline: Any, feature_cols: list[str]) -> list[FeatureSpec]:
+    preprocess = getattr(pipeline, "named_steps", {}).get("preprocess")
+    if preprocess is None:
+        raise ValueError("Pipeline is missing named step 'preprocess'")
+
+    transformers = getattr(preprocess, "transformers", None)
+    if transformers is None:
+        raise ValueError("Preprocess step does not expose 'transformers'")
+
+    numeric_defaults: dict[str, float] = {}
+    categorical_choices: dict[str, list[Any]] = {}
+
+    named_transformers = getattr(preprocess, "named_transformers_", {})
+    for name, transformer, cols in transformers:
+        if name == "remainder" or isinstance(cols, slice):
+            continue
+
+        fitted_transformer = named_transformers.get(name, transformer)
+        col_names = [str(c) for c in cols]
+        lower_name = str(name).lower()
+        named_steps = getattr(fitted_transformer, "named_steps", {})
+        onehot = named_steps.get("onehot")
+        imputer = named_steps.get("impute")
+
+        if onehot is not None and hasattr(onehot, "categories_"):
+            categories = getattr(onehot, "categories_", [])
+            for col, cat_values in zip(col_names, categories):
+                choices = list(cat_values)
+                categorical_choices[col] = choices
+            continue
+
+        if lower_name.startswith("cat"):
+            for col in col_names:
+                categorical_choices.setdefault(col, [])
+            continue
+
+        if imputer is not None and hasattr(imputer, "statistics_"):
+            stats = list(getattr(imputer, "statistics_"))
+            for col, stat in zip(col_names, stats):
+                if pd.isna(stat):
+                    numeric_defaults[col] = 0.0
+                else:
+                    numeric_defaults[col] = float(stat)
+        else:
+            for col in col_names:
+                numeric_defaults.setdefault(col, 0.0)
+
+    specs: list[FeatureSpec] = []
+    for col in feature_cols:
+        if col in categorical_choices:
+            choices = categorical_choices[col]
+            default = choices[0] if choices else ""
+            specs.append(
+                FeatureSpec(
+                    name=col,
+                    kind="categorical",
+                    default_value=default,
+                    min_value=None,
+                    max_value=None,
+                    choices=choices,
+                )
+            )
+            continue
+
+        default_num = float(numeric_defaults.get(col, 0.0))
+        specs.append(
+            FeatureSpec(
+                name=col,
+                kind="numeric",
+                default_value=default_num,
+                min_value=None,
+                max_value=None,
+                choices=None,
+            )
+        )
+    return specs
+
+
+def resolve_data_file_path(*, base_dir: Path, app_dir: Path, file_name: str = "data.xlsx") -> Path:
+    raw = Path(file_name)
+    if raw.is_absolute():
+        absolute = raw.resolve()
+        if absolute.exists():
+            return absolute
+        raise FileNotFoundError(f"Data file not found: {absolute}")
+
+    candidates: list[Path] = []
+    for path in (
+        base_dir / file_name,
+        app_dir / file_name,
+    ):
+        resolved = path.resolve()
+        if resolved not in candidates:
+            candidates.append(resolved)
+
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+
+    searched = ", ".join(str(p) for p in candidates)
+    raise FileNotFoundError(f"Data file not found: {file_name}. Searched: {searched}")
