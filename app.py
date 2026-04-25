@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import os
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -12,14 +12,12 @@ import shap
 import streamlit as st
 import streamlit.components.v1 as components
 
-from web_support import FeatureSpec, infer_feature_specs, resolve_latest_model_artifacts
+ROOT = Path(__file__).resolve().parent
+SRC = ROOT / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
 
-
-def _resolve_base_dir() -> Path:
-    env_path = os.getenv("WEB_BASE_DIR")
-    if env_path:
-        return Path(env_path).resolve()
-    return Path(__file__).resolve().parent.parent
+from ml_project.web_support import FeatureSpec, infer_feature_specs, resolve_latest_model_artifacts
 
 
 st.set_page_config(page_title="Medical AI Prediction", layout="wide", page_icon="🩺")
@@ -169,28 +167,27 @@ def _build_force_plot_html(
     return f"<head>{shap.getjs()}</head><body>{force_html}</body>"
 
 
-BASE_DIR = _resolve_base_dir()
-st.title("Medical AI Prediction Web")
+st.title("🩺 Medical AI Prediction Web")
 
-artifacts = resolve_latest_model_artifacts(base_dir=BASE_DIR)
-data_path = str((BASE_DIR / "data.xlsx").resolve())
+artifacts = resolve_latest_model_artifacts(base_dir=ROOT)
+data_path = "data.xlsx"
 
 try:
     pipeline = _load_model(str(artifacts.model_path))
     data_df = _load_data(data_path)
     specs = _get_feature_specs(data_path, tuple(artifacts.selected_features))
 except Exception as exc:
-    st.error(f"Load failed: {exc}")
+    st.error(f"加载失败: {exc}")
     st.stop()
 
-st.subheader("Input Features")
+st.subheader("输入特征")
 input_df = _render_inputs(specs)
-if st.button("Predict", type="primary", use_container_width=True):
+if st.button("开始预测", type="primary", use_container_width=True):
     proba = float(pipeline.predict_proba(input_df[artifacts.selected_features])[0, 1])
     threshold = artifacts.best_threshold if artifacts.best_threshold is not None else 0.5
     pred = int(proba >= float(threshold))
-    st.metric("Predicted Probability (Class 1)", f"{proba:.2%}")
-    st.metric("Predicted Label", f"{pred} (threshold={threshold:.3f})")
+    st.metric("预测概率(正类)", f"{proba:.2%}")
+    st.metric("分类结果", f"{pred} (阈值={threshold:.3f})")
 
     st.markdown("---")
     st.subheader("SHAP Force Plot")
@@ -208,5 +205,4 @@ if st.button("Predict", type="primary", use_container_width=True):
         components.html(tmp_path.read_text(encoding="utf-8"), height=380, scrolling=True)
         tmp_path.unlink(missing_ok=True)
     except Exception as exc:
-        st.warning(f"SHAP rendering failed: {exc}")
-
+        st.warning(f"SHAP 图生成失败: {exc}")
