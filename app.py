@@ -17,7 +17,10 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from ml_project.web_support import FeatureSpec, infer_feature_specs, resolve_latest_model_artifacts
+try:
+    from ml_project.web_support import FeatureSpec, infer_feature_specs, resolve_latest_model_artifacts
+except ModuleNotFoundError:
+    from web_support import FeatureSpec, infer_feature_specs, resolve_latest_model_artifacts
 
 
 st.set_page_config(page_title="Medical AI Prediction", layout="wide", page_icon="🩺")
