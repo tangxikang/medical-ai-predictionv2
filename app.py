@@ -5,7 +5,6 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-import joblib
 import numpy as np
 import pandas as pd
 import shap
@@ -21,6 +20,11 @@ try:
     from ml_project.web_support import FeatureSpec, infer_feature_specs, resolve_latest_model_artifacts
 except ModuleNotFoundError:
     from web_support import FeatureSpec, infer_feature_specs, resolve_latest_model_artifacts
+
+try:
+    from ml_project.model_compat import load_joblib_model
+except ModuleNotFoundError:
+    from model_compat import load_joblib_model
 
 
 st.set_page_config(page_title="Medical AI Prediction", layout="wide", page_icon="🩺")
@@ -96,7 +100,7 @@ def _aggregate_shap_by_feature(
 
 @st.cache_resource(show_spinner=False)
 def _load_model(model_path: str):
-    return joblib.load(model_path)
+    return load_joblib_model(model_path)
 
 
 @st.cache_data(show_spinner=False)
