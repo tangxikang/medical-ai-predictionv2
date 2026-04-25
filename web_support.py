@@ -56,8 +56,30 @@ def resolve_latest_model_artifacts(*, base_dir: Path) -> ModelArtifacts:
             best_threshold=threshold,
             outcome_col=(str(outcome) if outcome is not None else None),
         )
+
+    # Fallback layout: artifacts are directly under base_dir.
+    direct_model_path = base_dir / "best_model.joblib"
+    direct_metadata_path = base_dir / "best_model_metadata.json"
+    if direct_model_path.exists() and direct_metadata_path.exists():
+        md = _read_metadata(direct_metadata_path)
+        selected = [str(x) for x in md.get("selected_features", [])]
+        if not selected:
+            raise ValueError(f"selected_features is empty in {direct_metadata_path}")
+        threshold_raw = md.get("best_threshold")
+        threshold = float(threshold_raw) if threshold_raw is not None else None
+        outcome = md.get("outcome_col")
+        return ModelArtifacts(
+            model_path=direct_model_path,
+            metadata_path=direct_metadata_path,
+            selected_features=selected,
+            best_threshold=threshold,
+            outcome_col=(str(outcome) if outcome is not None else None),
+        )
+
     raise FileNotFoundError(
-        f"Cannot find model artifacts under {base_dir}. Expected outputs_*/models/best_model.joblib and best_model_metadata.json."
+        "Cannot find model artifacts under "
+        f"{base_dir}. Expected either outputs_*/models/best_model.joblib + best_model_metadata.json, "
+        "or base_dir/best_model.joblib + base_dir/best_model_metadata.json."
     )
 
 
@@ -118,4 +140,3 @@ def infer_feature_specs(*, df: pd.DataFrame, feature_cols: list[str]) -> list[Fe
                 )
             )
     return specs
-
